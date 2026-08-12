@@ -11,7 +11,7 @@ redistribution.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 DEFAULT_PURPOSES = (
@@ -32,7 +32,7 @@ def synthetic_lawful_basis(
     `data_subjects` is a list of party indices. `purposes` is the set of
     purpose_grants. `issued_at` defaults to now (UTC).
     """
-    issued = (issued_at or datetime.now(timezone.utc)).isoformat()
+    issued = (issued_at or datetime.now(UTC)).isoformat()
     return {
         "lawful_basis": "legitimate_interests",
         "data_subjects": data_subjects,

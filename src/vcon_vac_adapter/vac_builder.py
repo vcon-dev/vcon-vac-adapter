@@ -20,12 +20,8 @@ from typing import Any, Literal
 
 from .ir import AgentRef, Entry, Session
 
-VAC_SCHEMA_URL = (
-    "https://datatracker.ietf.org/doc/draft-birkholz-verifiable-agent-conversations/"
-)
-AGENT_SESSION_SCHEMA_URL = (
-    "https://datatracker.ietf.org/doc/draft-howe-vcon-agent-session/"
-)
+VAC_SCHEMA_URL = "https://datatracker.ietf.org/doc/draft-birkholz-verifiable-agent-conversations/"
+AGENT_SESSION_SCHEMA_URL = "https://datatracker.ietf.org/doc/draft-howe-vcon-agent-session/"
 VAC_RECORD_VERSION = "0.1"
 VAC_RECORD_NAMESPACE = uuid.UUID("6f0b1e1c-3a0a-5e3a-9f0b-1e1c3a0a5e3a")  # static
 
@@ -60,9 +56,7 @@ def _entry_to_vac(session: Session, entry: Entry) -> dict[str, Any]:
         "agent-id": entry.agent_id,
     }
     if entry.parent_id is not None:
-        base["parent-id"] = vac_entry_id(
-            session, _stub_entry_for_lookup(session, entry.parent_id)
-        )
+        base["parent-id"] = vac_entry_id(session, _stub_entry_for_lookup(session, entry.parent_id))
     if entry.kind == "message":
         base["role"] = entry.role
         base["text"] = entry.text
@@ -93,10 +87,13 @@ def _stub_entry_for_lookup(session: Session, entry_id: str) -> Entry:
             return e
     # If parent isn't in the session, return a stub with just the id (still
     # produces a deterministic UUIDv5 — consumer can still see it).
-    from .ir import Entry as _E
     import datetime as _dt
-    return _E(entry_id=entry_id, kind="event", timestamp=_dt.datetime.fromtimestamp(0),
-              agent_id="unknown")
+
+    from .ir import Entry as _E
+
+    return _E(
+        entry_id=entry_id, kind="event", timestamp=_dt.datetime.fromtimestamp(0), agent_id="unknown"
+    )
 
 
 def _validate_record(record: dict[str, Any]) -> None:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from vcon import Vcon
@@ -16,7 +16,7 @@ from vcon_vac_adapter.vac_builder import VAC_SCHEMA_URL
 
 
 def _fixture_session(*, with_subagent: bool = False, with_filechange: bool = True) -> Session:
-    started = datetime(2026, 5, 22, 18, 0, tzinfo=timezone.utc)
+    started = datetime(2026, 5, 22, 18, 0, tzinfo=UTC)
     agents = [
         AgentRef(
             agent_id="agent-claude-0",
@@ -138,7 +138,7 @@ def test_agent_party_meta_has_required_fields():
 
 def test_subagent_has_parent_agent_id():
     v = build_vcon(_fixture_session(with_subagent=True))
-    sub = [p for p in v.vcon_dict["parties"] if p.get("name") == "Sub-Agent"][0]
+    sub = next(p for p in v.vcon_dict["parties"] if p.get("name") == "Sub-Agent")
     assert sub["meta"]["agent_session"]["parent_agent_id"] == "agent-claude-0"
 
 
@@ -169,8 +169,12 @@ def test_vac_entry_ids_are_deterministic_across_reruns():
     s = _fixture_session()
     v1 = build_vcon(s)
     v2 = build_vcon(s)
-    rec1 = json.loads(next(a for a in v1.vcon_dict["analysis"] if a["type"] == "agent_trace")["body"])
-    rec2 = json.loads(next(a for a in v2.vcon_dict["analysis"] if a["type"] == "agent_trace")["body"])
+    rec1 = json.loads(
+        next(a for a in v1.vcon_dict["analysis"] if a["type"] == "agent_trace")["body"]
+    )
+    rec2 = json.loads(
+        next(a for a in v2.vcon_dict["analysis"] if a["type"] == "agent_trace")["body"]
+    )
     ids1 = [e["entry-id"] for e in rec1["verifiable-agent-record"]["session-trace"]["entries"]]
     ids2 = [e["entry-id"] for e in rec2["verifiable-agent-record"]["session-trace"]["entries"]]
     assert ids1 == ids2
@@ -191,7 +195,9 @@ def test_file_change_attachment_has_required_fields():
 
 def test_agent_environment_attachment_present_per_agent():
     v = _build()
-    envs = [a for a in v.vcon_dict.get("attachments", []) if a.get("purpose") == "agent_environment"]
+    envs = [
+        a for a in v.vcon_dict.get("attachments", []) if a.get("purpose") == "agent_environment"
+    ]
     assert len(envs) == 1
     body = json.loads(envs[0]["body"])
     assert body["cwd"] == "/Users/example/proj"

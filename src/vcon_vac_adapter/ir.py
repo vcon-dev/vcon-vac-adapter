@@ -17,9 +17,7 @@ from typing import Any, Literal
 
 EntryKind = Literal["message", "tool_call", "tool_result", "reasoning", "event"]
 Operation = Literal["create", "update", "delete", "read"]
-SourcePlatform = Literal[
-    "claude_code", "anthropic", "openai_responses", "openai_agents", "otel"
-]
+SourcePlatform = Literal["claude_code", "anthropic", "openai_responses", "openai_agents", "otel"]
 
 
 @dataclass(frozen=True)

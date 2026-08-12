@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal, cast
 
 from ..ir import AgentEnv, AgentRef, Entry, Session
 
@@ -71,7 +71,7 @@ def _ts(value: Any) -> datetime:
     return datetime.fromtimestamp(int(value or 0) / 1e9, tz=UTC)
 
 
-def _get(d: dict, *names: str, default: Any = None) -> Any:
+def _get(d: dict[str, Any], *names: str, default: Any = None) -> Any:
     for n in names:
         if d.get(n) not in (None, ""):
             return d[n]
@@ -101,15 +101,18 @@ def _json_maybe(value: Any) -> Any:
     return value
 
 
-def _message_texts(msg: Any) -> list[tuple[str, str]]:
+Role = Literal["user", "assistant"]
+
+
+def _message_texts(msg: Any) -> list[tuple[Role, str]]:
     """(role, text) pairs from a GenAI message: {role, content} or {role, parts}."""
     if isinstance(msg, str):
         return [("assistant", msg)]
     if not isinstance(msg, dict):
         return []
-    role = "user" if msg.get("role") == "user" else "assistant"
+    role: Role = "user" if msg.get("role") == "user" else "assistant"
     if "parts" in msg:
-        out = []
+        out: list[tuple[Role, str]] = []
         for part in msg["parts"]:
             if isinstance(part, dict) and part.get("type") in ("text", "reasoning"):
                 out.append((role, str(part.get("content", ""))))
@@ -118,12 +121,15 @@ def _message_texts(msg: Any) -> list[tuple[str, str]]:
         return out
     content = msg.get("content", msg.get("message", ""))
     if isinstance(content, list):  # Anthropic-style content blocks
-        return [(role, str(b.get("text", ""))) for b in content
-                if isinstance(b, dict) and b.get("type") == "text"]
+        return [
+            (role, str(b.get("text", "")))
+            for b in content
+            if isinstance(b, dict) and b.get("type") == "text"
+        ]
     return [(role, str(content))] if content else []
 
 
-def _agent_for(attrs: dict, resource: dict, scope: dict) -> AgentRef:
+def _agent_for(attrs: dict[str, Any], resource: dict[str, Any], scope: dict[str, Any]) -> AgentRef:
     model = _get(attrs, "gen_ai.response.model", "gen_ai.request.model", default="unknown")
     provider = _get(attrs, "gen_ai.provider.name", "gen_ai.system", default="unknown")
     agent_id = _get(attrs, "gen_ai.agent.id", "gen_ai.agent.name", default=f"{provider}:{model}")
@@ -148,9 +154,12 @@ def parse_spans(payload: Any) -> Session:
         raise ValueError("no spans in payload")
     # ponytail: parents start before children in any sane tracer, so start-time
     # order satisfies the IR's depth-first/parent-first invariant.
-    spans.sort(key=lambda s: (int(_get(s, "startTimeUnixNano", "start_time_unix_nano",
-                                       default=0) or 0),
-                              str(_get(s, "spanId", "span_id", default=""))))
+    spans.sort(
+        key=lambda s: (
+            int(_get(s, "startTimeUnixNano", "start_time_unix_nano", default=0) or 0),
+            str(_get(s, "spanId", "span_id", default="")),
+        )
+    )
 
     agents: dict[str, AgentRef] = {}
     entries: list[Entry] = []
@@ -162,8 +171,10 @@ def parse_spans(payload: Any) -> Session:
         attrs = _attrs(span.get("attributes"))
         span_id = str(_get(span, "spanId", "span_id", default=""))
         parent_id = str(_get(span, "parentSpanId", "parent_span_id", default="")) or None
-        start, end = (_ts(_get(span, "startTimeUnixNano", "start_time_unix_nano")),
-                      _ts(_get(span, "endTimeUnixNano", "end_time_unix_nano")))
+        start, end = (
+            _ts(_get(span, "startTimeUnixNano", "start_time_unix_nano")),
+            _ts(_get(span, "endTimeUnixNano", "end_time_unix_nano")),
+        )
         scope_version = scope_version or str(span["_scope"].get("version", ""))
         session_id = session_id or str(
             _get(attrs, "gen_ai.conversation.id", "session.id")
@@ -184,27 +195,41 @@ def parse_spans(payload: Any) -> Session:
 
         if op == "execute_tool":
             tool_id = str(_get(attrs, "gen_ai.tool.call.id", default=span_id))
-            entries.append(Entry(
-                entry_id=span_id, kind="tool_call", timestamp=start, agent_id=agent_id,
-                parent_id=parent_id,
-                tool_name=str(_get(attrs, "gen_ai.tool.name", default=span.get("name", "tool"))),
-                tool_use_id=tool_id,
-                tool_input=_json_maybe(_get(attrs, "gen_ai.tool.call.arguments")) or {},
-                duration_ms=duration_ms,
-            ))
+            entries.append(
+                Entry(
+                    entry_id=span_id,
+                    kind="tool_call",
+                    timestamp=start,
+                    agent_id=agent_id,
+                    parent_id=parent_id,
+                    tool_name=str(
+                        _get(attrs, "gen_ai.tool.name", default=span.get("name", "tool"))
+                    ),
+                    tool_use_id=tool_id,
+                    tool_input=_json_maybe(_get(attrs, "gen_ai.tool.call.arguments")) or {},
+                    duration_ms=duration_ms,
+                )
+            )
             result = _get(attrs, "gen_ai.tool.call.result")
             status = (span.get("status") or {}).get("code")
             is_error = status in (2, "STATUS_CODE_ERROR")
             if result is not None or is_error:
-                entries.append(Entry(
-                    entry_id=f"{span_id}:result", kind="tool_result", timestamp=end,
-                    agent_id=agent_id, parent_id=span_id, tool_use_id=tool_id,
-                    tool_output=_json_maybe(result), is_error=is_error,
-                ))
+                entries.append(
+                    Entry(
+                        entry_id=f"{span_id}:result",
+                        kind="tool_result",
+                        timestamp=end,
+                        agent_id=agent_id,
+                        parent_id=span_id,
+                        tool_use_id=tool_id,
+                        tool_output=_json_maybe(result),
+                        is_error=is_error,
+                    )
+                )
             continue
 
         if op in CHAT_OPS:
-            msgs: list[tuple[str, str]] = []
+            msgs: list[tuple[Role, str, datetime]] = []
             for key, ts in (("gen_ai.input.messages", start), ("gen_ai.output.messages", end)):
                 payload_msgs = _json_maybe(_get(attrs, key)) or []
                 if isinstance(payload_msgs, dict):
@@ -213,34 +238,57 @@ def parse_spans(payload: Any) -> Session:
                     msgs += [(r, t, ts) for r, t in _message_texts(m)]
             if not msgs:  # legacy: content rode on span events
                 for ev in span.get("events", []) or []:
-                    role = LEGACY_EVENT_ROLE.get(str(ev.get("name")))
-                    if not role:
+                    ev_role = LEGACY_EVENT_ROLE.get(str(ev.get("name")))
+                    if not ev_role:
                         continue
                     ev_attrs = _attrs(ev.get("attributes"))
                     body = _json_maybe(_get(ev_attrs, "gen_ai.event.content", "content", "message"))
-                    for _r, text in _message_texts(body if isinstance(body, dict)
-                                                   else {"role": role, "content": body}):
-                        msgs.append((role, text, _ts(ev.get("timeUnixNano",
-                                                            ev.get("time_unix_nano", 0)))))
+                    for _r, text in _message_texts(
+                        body if isinstance(body, dict) else {"role": ev_role, "content": body}
+                    ):
+                        msgs.append(
+                            (
+                                cast(Role, ev_role),
+                                text,
+                                _ts(ev.get("timeUnixNano", ev.get("time_unix_nano", 0))),
+                            )
+                        )
             for i, (role, text, ts) in enumerate(msgs):
                 if not text:
                     continue
-                entries.append(Entry(
-                    entry_id=f"{span_id}:{i}", kind="message", timestamp=ts,
-                    agent_id=agent_id, parent_id=parent_id, role=role, text=text,
-                ))
+                entries.append(
+                    Entry(
+                        entry_id=f"{span_id}:{i}",
+                        kind="message",
+                        timestamp=ts,
+                        agent_id=agent_id,
+                        parent_id=parent_id,
+                        role=role,
+                        text=text,
+                    )
+                )
             continue
 
-        entries.append(Entry(
-            entry_id=span_id, kind="event", timestamp=start, agent_id=agent_id,
-            parent_id=parent_id, event_type=str(span.get("name", op)),
-            duration_ms=duration_ms, meta={k: v for k, v in attrs.items()
-                                           if k.startswith("gen_ai.")} or None,
-        ))
+        entries.append(
+            Entry(
+                entry_id=span_id,
+                kind="event",
+                timestamp=start,
+                agent_id=agent_id,
+                parent_id=parent_id,
+                event_type=str(span.get("name", op)),
+                duration_ms=duration_ms,
+                meta={k: v for k, v in attrs.items() if k.startswith("gen_ai.")} or None,
+            )
+        )
 
     if not agents:  # tool-only trace: still needs a party to hang entries on
-        agents["unknown"] = AgentRef(agent_id="unknown", model_id="unknown",
-                                     provider="unknown", recording_agent="opentelemetry")
+        agents["unknown"] = AgentRef(
+            agent_id="unknown",
+            model_id="unknown",
+            provider="unknown",
+            recording_agent="opentelemetry",
+        )
     return Session(
         session_id=session_id or "otel-session",
         started_at=min(e.timestamp for e in entries) if entries else datetime.now(UTC),

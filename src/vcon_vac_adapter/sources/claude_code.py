@@ -29,9 +29,10 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from ..file_changes import derive_file_changes
 from ..git_utils import current_branch, head_commit
@@ -121,7 +122,9 @@ def parse_lines(
         agent_id="agent-claude-code-0",
         model_id=str(primary_model),
         provider=DEFAULT_PROVIDER,
-        recording_agent=f"{DEFAULT_RECORDER}/{recorder_version}" if recorder_version else DEFAULT_RECORDER,
+        recording_agent=f"{DEFAULT_RECORDER}/{recorder_version}"
+        if recorder_version
+        else DEFAULT_RECORDER,
         name=str(primary_model),
         environment=AgentEnv(cwd=cwd_str, vcs_branch=git_branch, vcs_commit=git_commit),
     )
@@ -139,7 +142,6 @@ def parse_lines(
         parent_uuid = ev.get("parentUuid")
         ev_type = ev.get("type")
         msg = ev.get("message") or {}
-        role = msg.get("role") or ("user" if ev_type == "user" else "assistant")
         blocks = _normalize_blocks(msg.get("content"))
 
         # Default ownership: primary agent. Sub-agent inheritance is handled
@@ -151,7 +153,7 @@ def parse_lines(
             tool_result_blocks = [b for b in blocks if b.get("type") == "tool_result"]
 
             for b in text_blocks:
-                eid = _stable_uuid(ev_uuid, f"user:{sid}:{ts.isoformat()}:{b.get('text','')[:32]}")
+                eid = _stable_uuid(ev_uuid, f"user:{sid}:{ts.isoformat()}:{b.get('text', '')[:32]}")
                 entries.append(
                     Entry(
                         entry_id=eid,
@@ -180,9 +182,7 @@ def parse_lines(
                     output = content
                 if isinstance(output, str):
                     tool_results_by_use_id[tu_id] = output
-                eid = _stable_uuid(
-                    ev_uuid, f"tool_result:{sid}:{tu_id}"
-                ) + f":{tu_id[:8]}"
+                eid = _stable_uuid(ev_uuid, f"tool_result:{sid}:{tu_id}") + f":{tu_id[:8]}"
                 entries.append(
                     Entry(
                         entry_id=eid,
@@ -201,9 +201,10 @@ def parse_lines(
             for b in blocks:
                 btype = b.get("type")
                 if btype == "thinking":
-                    eid = _stable_uuid(
-                        ev_uuid, f"reasoning:{sid}:{ts.isoformat()}"
-                    ) + f":r{len(entries)}"
+                    eid = (
+                        _stable_uuid(ev_uuid, f"reasoning:{sid}:{ts.isoformat()}")
+                        + f":r{len(entries)}"
+                    )
                     entries.append(
                         Entry(
                             entry_id=eid,
@@ -215,9 +216,10 @@ def parse_lines(
                         )
                     )
                 elif btype == "text":
-                    eid = _stable_uuid(
-                        ev_uuid, f"assistant:{sid}:{ts.isoformat()}"
-                    ) + f":a{len(entries)}"
+                    eid = (
+                        _stable_uuid(ev_uuid, f"assistant:{sid}:{ts.isoformat()}")
+                        + f":a{len(entries)}"
+                    )
                     entries.append(
                         Entry(
                             entry_id=eid,
@@ -235,9 +237,10 @@ def parse_lines(
                     tu_id = b.get("id", "")
                     name = b.get("name", "")
                     tinput = b.get("input") or {}
-                    eid = _stable_uuid(
-                        ev_uuid, f"tool_call:{sid}:{tu_id or name}"
-                    ) + f":t{len(entries)}"
+                    eid = (
+                        _stable_uuid(ev_uuid, f"tool_call:{sid}:{tu_id or name}")
+                        + f":t{len(entries)}"
+                    )
                     entries.append(
                         Entry(
                             entry_id=eid,
@@ -276,7 +279,11 @@ def parse_lines(
                     timestamp=ts,
                     agent_id=agent_id,
                     parent_id=parent_uuid,
-                    meta={k: v for k, v in ev.items() if k not in {"uuid", "parentUuid", "timestamp", "type"}},
+                    meta={
+                        k: v
+                        for k, v in ev.items()
+                        if k not in {"uuid", "parentUuid", "timestamp", "type"}
+                    },
                 )
             )
 
@@ -290,7 +297,11 @@ def parse_lines(
         session_id=sid,
         started_at=started_at,
         ended_at=ended_at,
-        user_party={"name": user_name, "role": "user", **({"validation": user_validation} if user_validation else {})},
+        user_party={
+            "name": user_name,
+            "role": "user",
+            **({"validation": user_validation} if user_validation else {}),
+        },
         agents=list(agents.values()),
         entries=entries,
         file_changes=file_changes,

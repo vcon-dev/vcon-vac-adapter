@@ -9,10 +9,10 @@ mcp-adapters is not installed.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
-from ..ir import AgentEnv, AgentRef, Entry, FileChange, Session, SourcePlatform
+from ..ir import AgentEnv, AgentRef, Entry, Session, SourcePlatform
 
 
 def from_mcp_session(mcp_session: Any, *, platform: SourcePlatform = "anthropic") -> Session:
@@ -25,9 +25,7 @@ def from_mcp_session(mcp_session: Any, *, platform: SourcePlatform = "anthropic"
     sid: str = mcp_session.session_id
     model_id: str = getattr(mcp_session.model, "name", "unknown")
     provider: str = _provider_for_platform(platform)
-    recorder: str = (
-        getattr(mcp_session.client, "framework", "") or platform.replace("_", "-")
-    )
+    recorder: str = getattr(mcp_session.client, "framework", "") or platform.replace("_", "-")
     proto_v: str = getattr(mcp_session, "protocol_version", "") or ""
 
     ctx = mcp_session.context or {}
@@ -49,7 +47,7 @@ def from_mcp_session(mcp_session: Any, *, platform: SourcePlatform = "anthropic"
     for turn in getattr(mcp_session, "turns", []) or []:
         entries.extend(_turn_to_entries(turn, agent.agent_id))
 
-    started = getattr(mcp_session, "start_time", None) or datetime.now(timezone.utc)
+    started = getattr(mcp_session, "start_time", None) or datetime.now(UTC)
     ended = getattr(mcp_session, "end_time", None)
 
     return Session(
@@ -85,7 +83,7 @@ def _turn_to_entries(turn: Any, agent_id: str) -> list[Entry]:
       - SystemTurn: role="system", message
     """
     role = getattr(turn, "role", None) or getattr(turn, "type", "")
-    ts = getattr(turn, "timestamp", None) or datetime.now(timezone.utc)
+    ts = getattr(turn, "timestamp", None) or datetime.now(UTC)
     turn_id = getattr(turn, "turn_id", "") or getattr(turn, "id", "")
     parent_id = getattr(turn, "parent_id", None)
 

@@ -63,7 +63,9 @@ def test_multiedit_and_bash_rm_produce_file_changes():
     multi = [fc for fc in s.file_changes if fc.path == "src/util.py"]
     assert len(multi) == 2
     v = build_vcon(s)
-    fc_atts = [a for a in v.vcon_dict.get("attachments", []) if a.get("purpose") == "agent_file_change"]
+    fc_atts = [
+        a for a in v.vcon_dict.get("attachments", []) if a.get("purpose") == "agent_file_change"
+    ]
     assert len(fc_atts) == 3
 
 

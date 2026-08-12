@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict
-from typing import Literal
+from typing import Any, Literal
 
 from vcon import Vcon
 from vcon.dialog import Dialog
@@ -41,14 +41,15 @@ def _filechange_body(fc: FileChange) -> str:
         "content_hash": fc.content_hash,
         "diff_text": fc.diff_text,
     }
-    return json.dumps({k: v for k, v in d.items() if v is not None},
-                      sort_keys=True, separators=(",", ":"))
+    return json.dumps(
+        {k: v for k, v in d.items() if v is not None}, sort_keys=True, separators=(",", ":")
+    )
 
 
-def _agent_meta(session: Session, agent_id: str) -> dict:
+def _agent_meta(session: Session, agent_id: str) -> dict[str, Any]:
     agent = next(a for a in session.agents if a.agent_id == agent_id)
     env = {k: v for k, v in asdict(agent.environment).items() if v is not None}
-    meta: dict = {
+    meta: dict[str, Any] = {
         "agent_session": {
             "model_id": agent.model_id,
             "provider": agent.provider,
@@ -168,9 +169,7 @@ def build_vcon(
                 raw_meta=session.raw_meta,
                 lawful_basis=None,
             )
-            parent_dialog = _dialog_for_entry(
-                dialog_idx_for_entry, e.parent_id or "", 0
-            )
+            parent_dialog = _dialog_for_entry(dialog_idx_for_entry, e.parent_id or "", 0)
             _emit_trace(sub, [parent_dialog])
 
     # --- 4. attachments: file_changes, environment, lawful_basis ---

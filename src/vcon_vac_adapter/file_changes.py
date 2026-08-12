@@ -18,11 +18,11 @@ import hashlib
 import re
 import shlex
 from base64 import urlsafe_b64encode
-from typing import Iterable
+from collections.abc import Iterable
 
 from .ir import Entry, FileChange, Operation
 
-_LINE_RANGE_RE = re.compile(r"L(\d+)\s*[-–]\s*L?(\d+)")
+_LINE_RANGE_RE = re.compile(r"L(\d+)\s*[-–]\s*L?(\d+)")  # noqa: RUF001 — en dash is intentional
 
 
 def _sha512_b64url(data: bytes) -> str:
@@ -181,7 +181,5 @@ def derive_file_changes(
         result_text = None
         if tool_results_by_use_id and e.tool_use_id:
             result_text = tool_results_by_use_id.get(e.tool_use_id)
-        results.extend(
-            _changes_for_claude_code(e, commit=commit, tool_result_text=result_text)
-        )
+        results.extend(_changes_for_claude_code(e, commit=commit, tool_result_text=result_text))
     return results

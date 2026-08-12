@@ -13,7 +13,7 @@ def parse_trace(request: dict[str, Any], response: dict[str, Any]) -> Session:
 
     Requires `vcon-mcp-adapters` installed; raises ImportError otherwise.
     """
-    from vcon_mcp_adapters.adapters.anthropic import from_trace  # type: ignore[import-not-found]
+    from vcon_mcp_adapters.adapters.anthropic import from_trace
 
     mcp = from_trace(request, response)
     return from_mcp_session(mcp, platform="anthropic")
