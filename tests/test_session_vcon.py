@@ -1,0 +1,243 @@
+"""Smoke + compliance tests for the VAC-emitting session vCon builder."""
+
+from __future__ import annotations
+
+import json
+from datetime import datetime, timezone
+
+import pytest
+from vcon import Vcon
+
+from vcon_vac_adapter.file_changes import derive_file_changes
+from vcon_vac_adapter.ir import AgentEnv, AgentRef, Entry, Session
+from vcon_vac_adapter.lawful_basis import synthetic_lawful_basis
+from vcon_vac_adapter.session_vcon import build_vcon
+from vcon_vac_adapter.vac_builder import VAC_SCHEMA_URL
+
+
+def _fixture_session(*, with_subagent: bool = False, with_filechange: bool = True) -> Session:
+    started = datetime(2026, 5, 22, 18, 0, tzinfo=timezone.utc)
+    agents = [
+        AgentRef(
+            agent_id="agent-claude-0",
+            model_id="claude-opus-4-7",
+            provider="anthropic",
+            recording_agent="claude-code/1.2.0",
+            name="Claude Opus 4.7",
+            environment=AgentEnv(
+                cwd="/Users/example/proj",
+                vcs_branch="main",
+                vcs_commit="abc123def456",
+            ),
+        )
+    ]
+    if with_subagent:
+        agents.append(
+            AgentRef(
+                agent_id="agent-claude-sub-1",
+                model_id="claude-haiku-4-5",
+                provider="anthropic",
+                recording_agent="claude-code/1.2.0",
+                name="Sub-Agent",
+                parent_agent_id="agent-claude-0",
+            )
+        )
+    entries = [
+        Entry(
+            entry_id="m1",
+            kind="message",
+            role="user",
+            text="List files in the cwd",
+            timestamp=started,
+            agent_id="agent-claude-0",
+        ),
+        Entry(
+            entry_id="m2",
+            kind="message",
+            role="assistant",
+            text="I'll list them.",
+            timestamp=started,
+            agent_id="agent-claude-0",
+            parent_id="m1",
+        ),
+        Entry(
+            entry_id="tc1",
+            kind="tool_call",
+            tool_name="Bash",
+            tool_use_id="tu_1",
+            tool_input={"command": "ls"},
+            timestamp=started,
+            agent_id="agent-claude-0",
+            parent_id="m2",
+        ),
+        Entry(
+            entry_id="tr1",
+            kind="tool_result",
+            tool_use_id="tu_1",
+            tool_output="README.md\nsrc/",
+            is_error=False,
+            timestamp=started,
+            agent_id="agent-claude-0",
+            parent_id="tc1",
+        ),
+    ]
+    if with_filechange:
+        entries.append(
+            Entry(
+                entry_id="tc2",
+                kind="tool_call",
+                tool_name="Write",
+                tool_use_id="tu_2",
+                tool_input={"file_path": "src/foo.py", "content": "x = 1\n"},
+                timestamp=started,
+                agent_id="agent-claude-0",
+                parent_id="m2",
+            )
+        )
+    file_changes = derive_file_changes(entries, commit="abc123def456")
+    return Session(
+        session_id="sess-test-1",
+        started_at=started,
+        ended_at=started,
+        user_party={"name": "Test User", "role": "user", "validation": "synthetic"},
+        agents=agents,
+        entries=entries,
+        file_changes=file_changes,
+        source_platform="claude_code",
+        lawful_basis=synthetic_lawful_basis(data_subjects=[0]),
+    )
+
+
+def _build(**kwargs) -> Vcon:
+    return build_vcon(_fixture_session(**kwargs))
+
+
+# --- spec / agent_session compliance ---
+
+
+def test_extensions_includes_agent_session():
+    v = _build()
+    assert "agent_session" in v.vcon_dict["extensions"]
+
+
+def test_extensions_includes_lawful_basis_when_set():
+    v = _build()
+    assert "lawful_basis" in v.vcon_dict["extensions"]
+
+
+def test_agent_party_meta_has_required_fields():
+    v = _build()
+    agent_parties = [p for p in v.vcon_dict["parties"] if p.get("role") == "agent"]
+    assert len(agent_parties) == 1
+    meta = agent_parties[0]["meta"]["agent_session"]
+    assert meta["model_id"] == "claude-opus-4-7"
+    assert meta["provider"] == "anthropic"
+    assert meta["recording_agent"] == "claude-code/1.2.0"
+    assert "environment" in meta and meta["environment"]["cwd"] == "/Users/example/proj"
+
+
+def test_subagent_has_parent_agent_id():
+    v = build_vcon(_fixture_session(with_subagent=True))
+    sub = [p for p in v.vcon_dict["parties"] if p.get("name") == "Sub-Agent"][0]
+    assert sub["meta"]["agent_session"]["parent_agent_id"] == "agent-claude-0"
+
+
+def test_analysis_has_agent_trace_with_vendor_schema_encoding():
+    v = _build()
+    analyses = v.vcon_dict.get("analysis", [])
+    traces = [a for a in analyses if a.get("type") == "agent_trace"]
+    assert len(traces) == 1
+    t = traces[0]
+    assert t["vendor"]
+    assert t["schema"] == VAC_SCHEMA_URL
+    assert t["encoding"] in {"json", "base64url"}
+
+
+def test_analysis_body_is_valid_vac_record():
+    v = _build()
+    t = next(a for a in v.vcon_dict["analysis"] if a["type"] == "agent_trace")
+    rec = json.loads(t["body"])
+    var = rec["verifiable-agent-record"]
+    assert var["version"]
+    trace = var["session-trace"]
+    assert isinstance(trace["entries"], list) and len(trace["entries"]) >= 4
+    for e in trace["entries"]:
+        assert "entry-id" in e and "kind" in e and "timestamp" in e
+
+
+def test_vac_entry_ids_are_deterministic_across_reruns():
+    s = _fixture_session()
+    v1 = build_vcon(s)
+    v2 = build_vcon(s)
+    rec1 = json.loads(next(a for a in v1.vcon_dict["analysis"] if a["type"] == "agent_trace")["body"])
+    rec2 = json.loads(next(a for a in v2.vcon_dict["analysis"] if a["type"] == "agent_trace")["body"])
+    ids1 = [e["entry-id"] for e in rec1["verifiable-agent-record"]["session-trace"]["entries"]]
+    ids2 = [e["entry-id"] for e in rec2["verifiable-agent-record"]["session-trace"]["entries"]]
+    assert ids1 == ids2
+
+
+def test_file_change_attachment_has_required_fields():
+    v = _build()
+    fcs = [a for a in v.vcon_dict.get("attachments", []) if a.get("purpose") == "agent_file_change"]
+    assert fcs, "expected at least one agent_file_change attachment"
+    fc = fcs[0]
+    assert "party" in fc and "dialog" in fc
+    assert fc["encoding"] == "json"
+    assert fc["content_hash"].startswith("sha512-")
+    body = json.loads(fc["body"])
+    assert body["path"] == "src/foo.py"
+    assert body["operation"] == "update"
+
+
+def test_agent_environment_attachment_present_per_agent():
+    v = _build()
+    envs = [a for a in v.vcon_dict.get("attachments", []) if a.get("purpose") == "agent_environment"]
+    assert len(envs) == 1
+    body = json.loads(envs[0]["body"])
+    assert body["cwd"] == "/Users/example/proj"
+
+
+def test_lawful_basis_attachment_uses_type_not_purpose():
+    v = _build()
+    lbs = [a for a in v.vcon_dict.get("attachments", []) if a.get("type") == "lawful_basis"]
+    assert len(lbs) == 1
+    body = json.loads(lbs[0]["body"])
+    purposes = [pg["purpose"] for pg in body["purpose_grants"]]
+    assert "agent_session_recording" in purposes
+    assert "agent_session_analysis" in purposes
+    assert "agent_session_redistribution" in purposes
+
+
+def test_no_legacy_schema_version_field():
+    v = _build()
+    for a in v.vcon_dict.get("analysis", []):
+        assert "schema_version" not in a
+
+
+def test_no_legacy_type_on_core_attachments():
+    v = _build()
+    for a in v.vcon_dict.get("attachments", []):
+        if a.get("purpose") in {"agent_file_change", "agent_environment"}:
+            assert "type" not in a
+
+
+def test_per_tool_call_granularity_emits_one_analysis_per_tool_call():
+    s = _fixture_session()
+    v = build_vcon(s, granularity="per_tool_call")
+    traces = [a for a in v.vcon_dict.get("analysis", []) if a["type"] == "agent_trace"]
+    tool_calls = [e for e in s.entries if e.kind == "tool_call"]
+    assert len(traces) == len(tool_calls)
+
+
+def test_round_trip_serializes_and_parses():
+    v = _build()
+    data = v.dumps()
+    Vcon.build_from_json(data)
+
+
+def test_cbor_encoding_when_requested():
+    pytest.importorskip("cbor2")
+    v = build_vcon(_fixture_session(), vac_encoding="cbor")
+    t = next(a for a in v.vcon_dict["analysis"] if a["type"] == "agent_trace")
+    assert t["encoding"] == "base64url"
+    assert t.get("mediatype") == "application/cbor"

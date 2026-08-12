@@ -1,0 +1,63 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "vcon-vac-adapter"
+version = "0.1.0"
+description = "Adapter that converts AI Agent Session events into vCons"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.12"
+authors = [{ name = "vCon Dev" }]
+keywords = ["vcon", "adapter", "vac"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+dependencies = [
+    "vcon>=0.9.4",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0.0",
+    "aiohttp>=3.8.0",
+    "aiofiles>=23.0.0",
+    "structlog>=23.0.0",
+    "prometheus-client>=0.20.0",
+    "watchfiles>=0.21.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-mock>=3.10.0",
+    "pytest-cov>=4.0.0",
+    "ruff>=0.4.0",
+    "mypy>=1.0.0",
+]
+signing = ["cryptography>=42.0.0"]
+cbor = ["cbor2>=5.6.0"]
+mcp-adapters = ["vcon-mcp-adapters"]
+
+[project.scripts]
+vac-adapter = "vcon_vac_adapter.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vcon_vac_adapter"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "RUF"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
