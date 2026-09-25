@@ -46,7 +46,8 @@ def test_lib_add_attachment_uses_purpose_with_party_and_dialog() -> None:
     v = new_vcon()
     v.add_attachment(
         purpose="call_metadata",
-        body=json.dumps({"foo": "bar"}),
+        mediatype="application/json",
+        body={"foo": "bar"},  # -04: raw JSON value under encoding "json"
         encoding="json",
         party=0,
         dialog=0,
@@ -57,7 +58,7 @@ def test_lib_add_attachment_uses_purpose_with_party_and_dialog() -> None:
     assert att["party"] == 0
     assert att["dialog"] == 0
     assert att["encoding"] == "json"
-    assert json.loads(att["body"]) == {"foo": "bar"}
+    assert att["body"] == {"foo": "bar"}
 
 
 def test_lib_add_analysis_uses_schema_not_schema_version() -> None:

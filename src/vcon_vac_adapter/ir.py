@@ -85,7 +85,6 @@ class Session:
     source_platform: SourcePlatform = "claude_code"
     source_protocol_version: str = ""
     raw_meta: dict[str, Any] = field(default_factory=dict)
-    lawful_basis: dict[str, Any] | None = None
 
     def agent_index(self) -> dict[str, int]:
         """Map agent_id → party index (1-based; user is party 0)."""

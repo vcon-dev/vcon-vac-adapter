@@ -3,7 +3,7 @@
 > Convert AI-agent session transcripts (Claude Code, Anthropic Messages API, OpenAI Responses, OpenAI Agents SDK) into [vCons](https://datatracker.ietf.org/doc/draft-ietf-vcon-vcon-core/) with the `agent_session` extension, embedding a [Verifiable Agent Conversations](https://datatracker.ietf.org/doc/draft-birkholz-verifiable-agent-conversations/) (VAC) record in `analysis[]`.
 
 **Spec targets:**
-- vCon core: `draft-ietf-vcon-vcon-core-02` (syntax `"0.4.0"`)
+- vCon core: `draft-ietf-vcon-vcon-core-04` (syntax `"0.4.0"`)
 - Agent session: [`draft-howe-vcon-agent-session-00`](https://datatracker.ietf.org/doc/draft-howe-vcon-agent-session/)
 - VAC record: [`draft-birkholz-verifiable-agent-conversations`](https://datatracker.ietf.org/doc/draft-birkholz-verifiable-agent-conversations/)
 
@@ -21,7 +21,7 @@ For each AI-agent session, it produces a single vCon that carries:
 3. **Internal trace** — tool calls, tool results, reasoning, and system events embedded as a JSON-encoded VAC `verifiable-agent-record` in `analysis[]` with `type: "agent_trace"` and `schema` pointing at the VAC datatracker URL.
 4. **File-edit provenance** — `attachments[]` entries with `purpose: "agent_file_change"` whenever the agent's tool calls touched a file (Claude Code: `Write`, `Edit`, `MultiEdit`, `NotebookEdit`, and file-touching `Bash` commands).
 5. **Environment metadata** — `purpose: "agent_environment"` per agent.
-6. **Optional lawful basis** — `lawful_basis` extension attachment for synthetic / test fixtures and recorded consent.
+6. **Optional lawful basis** — `purpose: "lawful_basis"` attachment (never the legacy `type` field) driven by `LAWFUL_BASIS`/`LAWFUL_BASIS_*` env vars or a `vcon.lawful_basis:` config block (see "Lawful basis" below). Never defaulted: an unset basis means no attachment, and a one-time warning is logged.
 
 ## v0.1 platform support
 
@@ -82,17 +82,60 @@ Options:
 - `--granularity {session,per_tool_call}` — single `agent_trace` per session (default) vs one per tool call (for selective redaction).
 - `--vac-encoding {json,cbor}` — CBOR mode emits a base64url-encoded CBOR record with `mediatype: application/cbor`.
 - `--critical-agent-session` — also add `agent_session` to vCon `critical[]`.
-- `--no-lawful-basis` — skip the lawful_basis attachment.
+- `--no-lawful-basis` — skip the lawful_basis attachment outright, regardless of `LAWFUL_BASIS`.
+- `--post` — also deliver the finished vCon. Needs either `--webhook-url` (+ optional `--webhook-secret` for HMAC signing) or `--conserver-url` (+ optional `--conserver-token`, repeatable `--ingress-list`) to POST directly to a vcon-server `/vcon` endpoint.
+
+```bash
+LAWFUL_BASIS=consent LAWFUL_BASIS_PURPOSE=recording \
+vac-adapter convert session.jsonl --platform claude_code --out session.vcon.json \
+  --post --conserver-url https://conserver.example.com --conserver-token "$CONSERVER_TOKEN"
+```
+
+### Lawful basis
+
+Never defaulted in code. Set via env vars (checked by `vcon_builder.LawfulBasisConfig.from_env()`,
+used by `convert` and by daemon mode when no YAML `vcon.lawful_basis:` block overrides it):
+
+- `LAWFUL_BASIS` — one of `consent`, `contract`, `legal_obligation`, `vital_interests`, `public_task`, `legitimate_interests`. Unset means no `lawful_basis` attachment is added, and a warning is logged once per process.
+- `LAWFUL_BASIS_PURPOSE` — comma-separated purpose grants (default `recording`).
+- `LAWFUL_BASIS_JURISDICTION`, `LAWFUL_BASIS_EXPIRATION` (ISO 8601), `LAWFUL_BASIS_PROOF_MECHANISM`, `LAWFUL_BASIS_PROOF_DESCRIPTION` — optional.
+
+Or, in `config.yaml`, under `vcon.lawful_basis:` (env vars still win per-field when both are set — see `LawfulBasisConfig.resolve()`):
+
+```yaml
+vcon:
+  lawful_basis:
+    lawful_basis: consent
+    purposes: [recording, transcription]
+    jurisdiction: US-MA
+```
+
+The resulting attachment uses `purpose: "lawful_basis"` (never the legacy `type` field), a string
+JSON `body`, and `mediatype: "application/json"`; `"lawful_basis"` is added to the vCon's top-level
+`extensions[]`.
 
 ### Daemon
 
 ```bash
 cp config.example.yaml config.yaml
-# edit config.yaml: source.platform, source.claude_code.projects_dir, webhook.url, ...
+# edit config.yaml: adapter.source_platform, source.claude_code.watch_dir, webhook.endpoints, ...
 vac-adapter daemon
 ```
 
-Daemon mode tails the configured source path, builds a vCon per detected session, and POSTs to the configured webhook with HMAC-SHA256 body signing, exponential backoff, and a dead-letter queue on full failure.
+When `adapter.source_platform: claude_code` and `source.claude_code.watch_dir` are both set, daemon
+mode watches that directory (via `watchfiles`) for Claude Code session `.jsonl` files, builds a vCon
+per new-or-changed session, and delivers it (webhook, HMAC-SHA256-signed, or conserver-direct per
+`delivery.mode`) with exponential backoff and a dead-letter queue on full failure. Delivery is
+idempotent per file content hash, tracked in `.vac-adapter-watch-state.json` inside the watched
+directory, so restarting the daemon doesn't redeliver unchanged sessions.
+
+**`source.claude_code.watch_dir` is never defaulted to the real `~/.claude/projects`.** It must be
+set explicitly (typically via `${SOME_ENV_VAR}` substitution) — an operator who wants to watch their
+own Claude Code projects directory opts in by pointing this at it themselves. With no `watch_dir`
+configured, or a `source_platform` other than `claude_code`, the daemon just serves `/healthz` and
+`/metrics` until stopped; other platforms (Anthropic, OpenAI Responses, OpenAI Agents SDK, OTel) have
+no watcher yet — use one-shot `convert --post` for those, or watch their log/trace output yourself
+and shell out to `convert`.
 
 `/healthz` and Prometheus `/metrics` are exposed on `server.host:server.port`.
 
@@ -115,11 +158,36 @@ Run the suite:
 pytest
 ```
 
+## Claude Code parser: two implementations, on purpose
+
+This repo's `sources/claude_code.py` and `vcon-mcp-adapters`' `adapters/claude_code.py` both parse
+the same Claude Code JSONL session format, and are not interchangeable — they target different
+output schemas for different purposes, so this adapter keeps its own parser canonical rather than
+delegating to the sibling repo's:
+
+- **This repo's parser** builds the local `ir.Session` IR: multi-agent parties (sub-agents detected
+  via `Task` tool calls with a `subagent_type`), a parent/child entry tree, full `reasoning` block
+  text, and derived `agent_file_change` records. `session_vcon.build_vcon` needs all of that to emit
+  the `agent_session` extension's multi-party structure and the VAC `agent_trace` record — the two
+  things this adapter exists to produce.
+- **`vcon-mcp-adapters`' parser** builds an `MCPSession`: single fixed user/assistant party pair (MCP
+  tool providers get their own party by naming convention only), no sub-agent detection, and only a
+  `thinking_block_count` in place of reasoning text — right-sized for its own single-agent redaction
+  and analytics use cases, not for this adapter's multi-agent VAC record.
+
+Recommendation: keep both. Neither should delegate to the other — collapsing them would either
+strip multi-agent/reasoning fidelity from this adapter's vCons, or add IR-specific complexity
+(sub-agent tracking, entry trees) that `vcon-mcp-adapters`' other consumers don't need. What's worth
+sharing instead is the low-level JSONL event-shape knowledge (block types, tool_use/tool_result
+pairing, sub-agent Task-call detection) if it ever drifts between the two — currently duplicated by
+necessity, not by oversight.
+
 ## Known limitations
 
-- **Reasoning fidelity** — when ingesting via `vcon-mcp-adapters` the upstream Claude Code parser records only `thinking_block_count`; our native Claude Code parser preserves full thinking text.
+- **Reasoning fidelity** — when ingesting via `vcon-mcp-adapters` the upstream Claude Code parser records only `thinking_block_count`; our native Claude Code parser preserves full thinking text. See "Claude Code parser" above for why the two parsers aren't merged.
 - **Edit `content_hash`** is post-hoc lossy unless `--git-blame-mode` (planned) reads the file at the recorded commit via `git show`.
 - **Sub-agent detection** for Claude Code relies on the Task tool naming; structural changes upstream will silently degrade to single-agent emission.
+- **Daemon mode** only watches Claude Code session directories so far (see "Daemon" above); other source platforms need `convert --post` driven externally.
 
 ## Related
 

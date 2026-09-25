@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime
 
 import pytest
@@ -10,9 +9,16 @@ from vcon import Vcon
 
 from vcon_vac_adapter.file_changes import derive_file_changes
 from vcon_vac_adapter.ir import AgentEnv, AgentRef, Entry, Session
-from vcon_vac_adapter.lawful_basis import synthetic_lawful_basis
 from vcon_vac_adapter.session_vcon import build_vcon
 from vcon_vac_adapter.vac_builder import VAC_SCHEMA_URL
+from vcon_vac_adapter.vcon_builder import LawfulBasisConfig, json_body
+
+from .helpers import DEFAULT_PURPOSES
+
+_SYNTHETIC_LAWFUL_BASIS_CFG = LawfulBasisConfig(
+    lawful_basis="legitimate_interests",
+    purposes=DEFAULT_PURPOSES,
+)
 
 
 def _fixture_session(*, with_subagent: bool = False, with_filechange: bool = True) -> Session:
@@ -104,12 +110,14 @@ def _fixture_session(*, with_subagent: bool = False, with_filechange: bool = Tru
         entries=entries,
         file_changes=file_changes,
         source_platform="claude_code",
-        lawful_basis=synthetic_lawful_basis(data_subjects=[0]),
     )
 
 
 def _build(**kwargs) -> Vcon:
-    return build_vcon(_fixture_session(**kwargs))
+    return build_vcon(
+        _fixture_session(**kwargs),
+        lawful_basis_cfg=_SYNTHETIC_LAWFUL_BASIS_CFG,
+    )
 
 
 # --- spec / agent_session compliance ---
@@ -156,7 +164,7 @@ def test_analysis_has_agent_trace_with_vendor_schema_encoding():
 def test_analysis_body_is_valid_vac_record():
     v = _build()
     t = next(a for a in v.vcon_dict["analysis"] if a["type"] == "agent_trace")
-    rec = json.loads(t["body"])
+    rec = json_body(t)
     var = rec["verifiable-agent-record"]
     assert var["version"]
     trace = var["session-trace"]
@@ -169,12 +177,8 @@ def test_vac_entry_ids_are_deterministic_across_reruns():
     s = _fixture_session()
     v1 = build_vcon(s)
     v2 = build_vcon(s)
-    rec1 = json.loads(
-        next(a for a in v1.vcon_dict["analysis"] if a["type"] == "agent_trace")["body"]
-    )
-    rec2 = json.loads(
-        next(a for a in v2.vcon_dict["analysis"] if a["type"] == "agent_trace")["body"]
-    )
+    rec1 = json_body(next(a for a in v1.vcon_dict["analysis"] if a["type"] == "agent_trace"))
+    rec2 = json_body(next(a for a in v2.vcon_dict["analysis"] if a["type"] == "agent_trace"))
     ids1 = [e["entry-id"] for e in rec1["verifiable-agent-record"]["session-trace"]["entries"]]
     ids2 = [e["entry-id"] for e in rec2["verifiable-agent-record"]["session-trace"]["entries"]]
     assert ids1 == ids2
@@ -188,7 +192,9 @@ def test_file_change_attachment_has_required_fields():
     assert "party" in fc and "dialog" in fc
     assert fc["encoding"] == "json"
     assert fc["content_hash"].startswith("sha512-")
-    body = json.loads(fc["body"])
+    # -04 §2.3.2: encoding: "json" means `body` IS the value, not a string.
+    assert not isinstance(fc["body"], str)
+    body = json_body(fc)
     assert body["path"] == "src/foo.py"
     assert body["operation"] == "update"
 
@@ -199,19 +205,42 @@ def test_agent_environment_attachment_present_per_agent():
         a for a in v.vcon_dict.get("attachments", []) if a.get("purpose") == "agent_environment"
     ]
     assert len(envs) == 1
-    body = json.loads(envs[0]["body"])
+    assert not isinstance(envs[0]["body"], str)
+    body = json_body(envs[0])
     assert body["cwd"] == "/Users/example/proj"
 
 
-def test_lawful_basis_attachment_uses_type_not_purpose():
+def test_lawful_basis_attachment_uses_purpose_not_type():
     v = _build()
-    lbs = [a for a in v.vcon_dict.get("attachments", []) if a.get("type") == "lawful_basis"]
+    lbs = [a for a in v.vcon_dict.get("attachments", []) if a.get("purpose") == "lawful_basis"]
     assert len(lbs) == 1
-    body = json.loads(lbs[0]["body"])
+    lb = lbs[0]
+    assert "type" not in lb  # NEVER the legacy `type` field
+    # -04 §2.3.2: encoding: "json" means `body` IS the value, not a string.
+    assert not isinstance(lb["body"], str)
+    assert lb["mediatype"] == "application/json"
+    body = json_body(lb)
+    assert body["lawful_basis"] == "legitimate_interests"
     purposes = [pg["purpose"] for pg in body["purpose_grants"]]
     assert "agent_session_recording" in purposes
     assert "agent_session_analysis" in purposes
     assert "agent_session_redistribution" in purposes
+
+
+def test_lawful_basis_attachment_omitted_when_unset(monkeypatch):
+    for var in (
+        "LAWFUL_BASIS",
+        "LAWFUL_BASIS_PURPOSE",
+        "LAWFUL_BASIS_JURISDICTION",
+        "LAWFUL_BASIS_EXPIRATION",
+        "LAWFUL_BASIS_PROOF_MECHANISM",
+        "LAWFUL_BASIS_PROOF_DESCRIPTION",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    v = build_vcon(_fixture_session(), lawful_basis_cfg=LawfulBasisConfig(lawful_basis=None))
+    lbs = [a for a in v.vcon_dict.get("attachments", []) if a.get("purpose") == "lawful_basis"]
+    assert lbs == []
+    assert "lawful_basis" not in v.vcon_dict.get("extensions", [])
 
 
 def test_no_legacy_schema_version_field():
