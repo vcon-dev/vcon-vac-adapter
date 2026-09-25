@@ -8,9 +8,12 @@ adapter:
 
 # Source platform configuration
 source:
-  # Claude Code: tail JSONL files under projects_dir
+  # Claude Code: daemon mode watches this directory of session .jsonl files.
+  # REQUIRED (no default) for the daemon watcher to run at all -- it never
+  # falls back to the real ~/.claude/projects. Point it at the directory you
+  # actually want watched, e.g. via an env var:
   claude_code:
-    projects_dir: ${HOME}/.claude/projects
+    watch_dir: ${VAC_ADAPTER_WATCH_DIR}
   # Anthropic / OpenAI Responses: directory of {request, response} JSON pairs
   anthropic:
     logs_dir: /var/log/agent/anthropic
@@ -33,15 +36,30 @@ vcon:
   granularity: session        # session | per_tool_call
   # Add "agent_session" to vCon critical[] if downstream MUST honor it
   critical_agent_session: false
-  # Synthetic / test data only: emit lawful_basis attachment
-  include_lawful_basis: false
+  # Whether to attempt a lawful_basis attachment at all. Even when true, no
+  # attachment is written unless LAWFUL_BASIS (or lawful_basis.lawful_basis
+  # below) is actually set -- never defaulted.
+  include_lawful_basis: true
+  # Optional: driven by LAWFUL_BASIS* env vars, this block, or both (env
+  # wins per-field). Leave unset entirely to build vCons with no
+  # lawful_basis attachment.
+  # lawful_basis:
+  #   lawful_basis: consent   # consent | contract | legal_obligation |
+  #                           # vital_interests | public_task | legitimate_interests
+  #   purposes: [recording]
+  #   jurisdiction: US-MA
   # Optional: JWS signing
   signing:
     enabled: false
     private_key_path: ${VCON_SIGNING_KEY_PATH}
     key_id: ${VCON_SIGNING_KEY_ID}
 
-# Webhook delivery
+# Delivery: pick webhook (generic, HMAC-signed, fans out to N endpoints) or
+# conserver (POST directly to a vcon-server /vcon endpoint).
+delivery:
+  mode: webhook   # webhook | conserver
+
+# Webhook delivery (delivery.mode: webhook)
 webhook:
   endpoints:
     - url: ${VCON_WEBHOOK_URL}
@@ -52,6 +70,15 @@ webhook:
     initial_backoff_seconds: 1
     max_backoff_seconds: 60
   dead_letter_path: /app/vcons/dlq
+
+# Conserver-direct delivery (delivery.mode: conserver); shares webhook.retry
+# and webhook.dead_letter_path above.
+conserver:
+  base_url: ${CONSERVER_BASE_URL}
+  token: ${CONSERVER_API_TOKEN}
+  token_header: x-conserver-api-token
+  ingress_lists: []
+  timeout_seconds: 30
 
 # Local filesystem storage (optional)
 storage:
