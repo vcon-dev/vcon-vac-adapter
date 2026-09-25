@@ -38,6 +38,7 @@ dev = [
     "mypy>=1.0.0",
     "types-PyYAML",
     "types-aiofiles",
+    "jsonschema>=4.20.0",
 ]
 signing = ["cryptography>=42.0.0"]
 cbor = ["cbor2>=5.6.0"]

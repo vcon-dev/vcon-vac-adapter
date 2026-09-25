@@ -9,6 +9,7 @@ import pytest
 
 from vcon_vac_adapter.session_vcon import build_vcon
 from vcon_vac_adapter.sources.otel import parse_spans
+from vcon_vac_adapter.vcon_builder import json_body
 
 FIXTURE = Path(__file__).parent / "fixtures" / "otel" / "genai_trace.json"
 
@@ -55,7 +56,7 @@ def test_builds_vcon_with_vac_record(session):
     assert len(d["dialog"]) == 2
 
     analysis = next(a for a in d["analysis"] if a["type"] == "agent_trace")
-    vac = json.loads(analysis["body"])["verifiable-agent-record"]
+    vac = json_body(analysis)["verifiable-agent-record"]
     assert analysis["schema"].endswith("draft-birkholz-verifiable-agent-conversations/")
     assert vac["session-trace"]["source-platform"] == "otel"
     entries = vac["session-trace"]["entries"]

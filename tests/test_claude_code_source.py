@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from vcon import Vcon
 
 from vcon_vac_adapter.session_vcon import build_vcon
 from vcon_vac_adapter.sources.claude_code import parse_file
+from vcon_vac_adapter.vcon_builder import json_body
 
 FIXTURES = Path(__file__).parent / "fixtures" / "claude_code"
 
@@ -40,7 +40,7 @@ def test_simple_session_emits_valid_vcon():
     # agent_trace analysis present
     traces = [a for a in v.vcon_dict.get("analysis", []) if a["type"] == "agent_trace"]
     assert len(traces) == 1
-    body = json.loads(traces[0]["body"])
+    body = json_body(traces[0])
     entries = body["verifiable-agent-record"]["session-trace"]["entries"]
     kinds = [e["kind"] for e in entries]
     assert "tool_call" in kinds
@@ -48,7 +48,7 @@ def test_simple_session_emits_valid_vcon():
     # file_change attachment present
     fcs = [a for a in v.vcon_dict.get("attachments", []) if a.get("purpose") == "agent_file_change"]
     assert len(fcs) == 1
-    body = json.loads(fcs[0]["body"])
+    body = json_body(fcs[0])
     assert body["path"] == "src/foo.py"
     # Round trip
     Vcon.build_from_json(v.dumps())

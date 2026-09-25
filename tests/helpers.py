@@ -1,12 +1,12 @@
-"""Build a lawful_basis attachment body per draft-howe-vcon-lawful-basis.
+"""Test-only helpers. NOT importable from `src/` — see CON-1088: the adapter
+must never emit synthetic lawful-basis data on a real conversion path, only
+`vcon_builder.add_lawful_basis()` driven by an explicit `LawfulBasisConfig`
+may write a `lawful_basis` attachment. `grep -rn synthetic_lawful_basis` must
+show hits only under `tests/`.
 
-The lawful_basis attachment is the documented exception that uses `type:
-"lawful_basis"` rather than the conventional `purpose`. Add `"lawful_basis"` to
-the top-level vCon `extensions[]` whenever this attachment is present.
-
-For synthetic / test data this module emits a `legitimate_interests` basis with
-explicit purpose grants for agent-session recording, analysis, and (optionally)
-redistribution.
+Formerly `src/vcon_vac_adapter/lawful_basis.py` (moved here CON-1088); no code
+under `src/` used it for anything other than a dead fixture-data path, so it
+was safe to relocate outright rather than keep a thin re-export.
 """
 
 from __future__ import annotations
@@ -27,10 +27,12 @@ def synthetic_lawful_basis(
     purposes: tuple[str, ...] = DEFAULT_PURPOSES,
     issued_at: datetime | None = None,
 ) -> dict[str, Any]:
-    """Return a lawful_basis attachment body for synthetic agent-session data.
-
-    `data_subjects` is a list of party indices. `purposes` is the set of
-    purpose_grants. `issued_at` defaults to now (UTC).
+    """Return a legacy-shape (`type: "lawful_basis"`) attachment body, kept
+    only for tests that still want to exercise a hand-built lawful_basis
+    dict shape. Real vCon construction goes through
+    `vcon_builder.LawfulBasisConfig` + `vcon_builder.add_lawful_basis()`,
+    which writes `purpose: "lawful_basis"` (not `type`) per the current
+    lawful_basis extension shape.
     """
     issued = (issued_at or datetime.now(UTC)).isoformat()
     return {

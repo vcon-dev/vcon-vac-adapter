@@ -24,14 +24,17 @@ from vcon.dialog import Dialog
 from vcon.party import Party
 
 from .ir import FileChange, Session
-from .lawful_basis import DEFAULT_PURPOSES
 from .vac_builder import VAC_SCHEMA_URL, build_vac_record
-from .vcon_builder import new_vcon, sha512_b64url
+from .vcon_builder import LawfulBasisConfig, add_lawful_basis, new_vcon, sha512_b64url
 
 Granularity = Literal["session", "per_tool_call"]
 
 
-def _filechange_body(fc: FileChange) -> str:
+def _filechange_body(fc: FileChange) -> dict[str, Any]:
+    """The `agent_file_change` attachment body: a raw JSON value, per
+    draft-ietf-vcon-vcon-core-04 §2.3.2 (`encoding: "json"` means `body` IS
+    the value, not a `json.dumps()` string).
+    """
     d = {
         "path": fc.path,
         "contributor": fc.contributor or fc.agent_id,
@@ -41,9 +44,7 @@ def _filechange_body(fc: FileChange) -> str:
         "content_hash": fc.content_hash,
         "diff_text": fc.diff_text,
     }
-    return json.dumps(
-        {k: v for k, v in d.items() if v is not None}, sort_keys=True, separators=(",", ":")
-    )
+    return {k: v for k, v in d.items() if v is not None}
 
 
 def _agent_meta(session: Session, agent_id: str) -> dict[str, Any]:
@@ -77,14 +78,19 @@ def build_vcon(
     *,
     granularity: Granularity = "session",
     include_lawful_basis: bool = True,
+    lawful_basis_cfg: LawfulBasisConfig | None = None,
     include_environment_attachments: bool = True,
     vac_encoding: Literal["json", "cbor"] = "json",
     critical_agent_session: bool = False,
 ) -> Vcon:
-    extensions: list[str] = ["agent_session"]
-    if include_lawful_basis and session.lawful_basis is not None:
-        extensions.append("lawful_basis")
-    v = new_vcon(extensions=extensions)
+    """Build the vCon. `lawful_basis_cfg` (default `LawfulBasisConfig.from_env()`)
+    drives the optional `lawful_basis` attachment/extension (see
+    `vcon_builder.add_lawful_basis`); `include_lawful_basis=False` skips it
+    outright regardless of config. Never invent a basis: an unset
+    `cfg.lawful_basis` means no attachment is added, and `add_lawful_basis`
+    logs a warning rather than defaulting one.
+    """
+    v = new_vcon(extensions=["agent_session"])
 
     if critical_agent_session:
         v.vcon_dict["critical"] = ["agent_session"]
@@ -136,6 +142,9 @@ def build_vcon(
 
     # --- 3. analysis: VAC agent_trace ---
     def _emit_trace(sess: Session, dialog: list[int]) -> None:
+        # `body` is the raw VAC record dict for `encoding: "json"`, or a
+        # base64url CBOR string for `encoding: "base64url"` — see
+        # build_vac_record()'s docstring (draft-ietf-vcon-vcon-core-04 §2.3.2).
         enc, body = build_vac_record(sess, cbor=(vac_encoding == "cbor"))
         kwargs = dict(
             type="agent_trace",
@@ -145,9 +154,8 @@ def build_vcon(
             encoding=enc,
             body=body,
             dialog=dialog,
+            mediatype="application/cbor" if enc == "base64url" else "application/json",
         )
-        if enc == "base64url":
-            kwargs["mediatype"] = "application/cbor"
         v.add_analysis(**kwargs)
 
     if granularity == "session":
@@ -167,21 +175,26 @@ def build_vcon(
                 source_platform=session.source_platform,
                 source_protocol_version=session.source_protocol_version,
                 raw_meta=session.raw_meta,
-                lawful_basis=None,
             )
             parent_dialog = _dialog_for_entry(dialog_idx_for_entry, e.parent_id or "", 0)
             _emit_trace(sub, [parent_dialog])
 
     # --- 4. attachments: file_changes, environment, lawful_basis ---
+    entry_timestamp = {e.entry_id: e.timestamp.isoformat() for e in session.entries}
+    session_start = session.started_at.isoformat()
+
     for fc in session.file_changes:
         body = _filechange_body(fc)
+        canonical_bytes = json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
         v.add_attachment(
             purpose="agent_file_change",
             party=agent_index.get(fc.agent_id, 1),
             dialog=_dialog_for_entry(dialog_idx_for_entry, fc.entry_id, 0),
+            start=entry_timestamp.get(fc.entry_id, session_start),
             encoding="json",
+            mediatype="application/json",
             body=body,
-            content_hash=sha512_b64url(body.encode("utf-8")),
+            content_hash=sha512_b64url(canonical_bytes),
         )
 
     if include_environment_attachments:
@@ -189,39 +202,23 @@ def build_vcon(
             env = {k: v_ for k, v_ in asdict(a.environment).items() if v_ is not None}
             if not env:
                 continue
-            body = json.dumps(env, sort_keys=True, separators=(",", ":"))
+            body = env
+            canonical_bytes = json.dumps(body, sort_keys=True, separators=(",", ":")).encode(
+                "utf-8"
+            )
             v.add_attachment(
                 purpose="agent_environment",
                 party=agent_index[a.agent_id],
                 dialog=0,
+                start=session_start,
                 encoding="json",
+                mediatype="application/json",
                 body=body,
-                content_hash=sha512_b64url(body.encode("utf-8")),
+                content_hash=sha512_b64url(canonical_bytes),
             )
 
-    if include_lawful_basis and session.lawful_basis is not None:
-        body = json.dumps(session.lawful_basis, sort_keys=True, separators=(",", ":"))
-        # lawful_basis is the documented exception: uses `type` not `purpose`.
-        # The vcon library's add_attachment writes `purpose`; we append the dict
-        # directly per the lawful_basis extension draft.
-        v.vcon_dict.setdefault("attachments", []).append(
-            {
-                "type": "lawful_basis",
-                "party": 0,
-                "dialog": 0,
-                "encoding": "json",
-                "body": body,
-                "content_hash": sha512_b64url(body.encode("utf-8")),
-            }
-        )
-
-    # Mark all purpose_grants present so consumers can discover scope quickly
-    # without parsing the body.
-    if include_lawful_basis and session.lawful_basis is not None:
-        purposes = [pg.get("purpose") for pg in session.lawful_basis.get("purpose_grants", [])]
-        if not purposes:
-            purposes = list(DEFAULT_PURPOSES)
-        v.vcon_dict.setdefault("meta", {})
-        v.vcon_dict["meta"]["lawful_basis_purposes"] = purposes
+    if include_lawful_basis:
+        cfg = lawful_basis_cfg if lawful_basis_cfg is not None else LawfulBasisConfig.from_env()
+        add_lawful_basis(v, cfg, granted_at=session.started_at.isoformat(), party=0, dialog=0)
 
     return v

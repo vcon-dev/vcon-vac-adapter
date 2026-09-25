@@ -12,7 +12,6 @@ constants and the `_entry_to_vac` / `_agent_to_vac` projections.
 
 from __future__ import annotations
 
-import json
 import uuid
 from base64 import urlsafe_b64encode
 from dataclasses import asdict
@@ -114,8 +113,14 @@ def _validate_record(record: dict[str, Any]) -> None:
 
 def build_vac_record(
     session: Session, *, cbor: bool = False
-) -> tuple[Literal["json", "base64url"], str]:
-    """Return (encoding, body) tuple. body is a string in both cases."""
+) -> tuple[Literal["json", "base64url"], Any]:
+    """Return (encoding, body) tuple.
+
+    Per draft-ietf-vcon-vcon-core-04 §2.3.2: for `encoding: "json"`, `body` is
+    the raw JSON value (a dict here, not a `json.dumps()` string). For
+    `encoding: "base64url"` (CBOR mode), `body` is the base64url-encoded
+    string as before.
+    """
     record = {
         "verifiable-agent-record": {
             "version": VAC_RECORD_VERSION,
@@ -134,4 +139,4 @@ def build_vac_record(
         import cbor2  # type: ignore[import-not-found]
 
         return "base64url", urlsafe_b64encode(cbor2.dumps(record)).rstrip(b"=").decode("ascii")
-    return "json", json.dumps(record, sort_keys=True, separators=(",", ":"))
+    return "json", record
