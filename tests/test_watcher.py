@@ -12,9 +12,7 @@ import pytest
 
 from vcon_vac_adapter.watcher import SessionWatcher
 
-FIXTURE = (
-    Path(__file__).parent / "fixtures" / "claude_code" / "simple_session.jsonl"
-).read_text()
+FIXTURE = (Path(__file__).parent / "fixtures" / "claude_code" / "simple_session.jsonl").read_text()
 
 _EXTRA_TURN = (
     '{"type":"user","uuid":"u3","parentUuid":"a2","timestamp":"2026-05-22T18:00:04.000Z",'

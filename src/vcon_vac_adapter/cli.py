@@ -176,9 +176,7 @@ async def _run_daemon(args: argparse.Namespace) -> int:
             deliver=delivery.deliver,
             granularity=config.vcon.get("granularity", "session"),
             include_lawful_basis=config.vcon.get("include_lawful_basis", True),
-            lawful_basis_cfg=LawfulBasisConfig.resolve(
-                yaml_block=config.vcon.get("lawful_basis")
-            ),
+            lawful_basis_cfg=LawfulBasisConfig.resolve(yaml_block=config.vcon.get("lawful_basis")),
         )
         log.info("watching", watch_dir=str(watch_dir), mode=config.delivery.mode)
         watcher_task = asyncio.create_task(watcher.run(stop_event=stop))
