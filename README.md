@@ -25,6 +25,28 @@ For each AI-agent session, it produces a single vCon that carries:
 5. **Environment metadata** — `purpose: "agent_environment"` per agent.
 6. **Optional lawful basis** — `purpose: "lawful_basis"` attachment (never the legacy `type` field) driven by `LAWFUL_BASIS`/`LAWFUL_BASIS_*` env vars or a `vcon.lawful_basis:` config block (see "Lawful basis" below). Never defaulted: an unset basis means no attachment, and a one-time warning is logged.
 
+### Analysis-to-attachment links (`analysis[].attachment`)
+
+Per draft-ietf-vcon-vcon-core-04 §4.5.3, an `analysis` entry's `attachment` field is an
+index (or list of indices) into `attachments[]` naming which attachments it was derived
+from; it's optional only when the analysis wasn't derived from any attachment.
+
+Every `agent_trace` analysis entry (both `granularity=session` and `granularity=per_tool_call`)
+embeds the full `session.agents` list, environments included, so it's always derived from
+every `agent_environment` attachment. At `per_tool_call` granularity it additionally covers
+exactly one tool-call entry, so it's also derived from any `agent_file_change` attachment(s)
+produced by that same entry (e.g. a `Write`/`Edit`/`MultiEdit` call); at `session` granularity
+it covers every entry, so it's derived from every `agent_file_change` attachment present.
+`agent_trace` is never derived from `lawful_basis` — that attachment, when present, is always
+appended last and carries no `attachment` back-reference from any analysis.
+
+Indices are resolved against the attachments actually appended to the vCon at analysis-build
+time (`session_vcon.build_vcon()` appends `agent_file_change`/`agent_environment` before
+emitting `agent_trace`), never hardcoded. Because `lawful_basis` is always the last attachment
+appended — whether via `include_lawful_basis=True` inside `build_vcon()` or by a caller invoking
+`add_lawful_basis()` itself afterward (e.g. a CLI `finalize` step) — appending it can never shift
+an already-resolved `attachment` index.
+
 ## v0.1 platform support
 
 | Platform | Mode | Notes |

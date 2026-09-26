@@ -11,7 +11,7 @@ from vcon_vac_adapter.file_changes import derive_file_changes
 from vcon_vac_adapter.ir import AgentEnv, AgentRef, Entry, Session
 from vcon_vac_adapter.session_vcon import build_vcon
 from vcon_vac_adapter.vac_builder import VAC_SCHEMA_URL
-from vcon_vac_adapter.vcon_builder import LawfulBasisConfig, json_body
+from vcon_vac_adapter.vcon_builder import LawfulBasisConfig, add_lawful_basis, json_body
 
 from .helpers import DEFAULT_PURPOSES
 
@@ -310,3 +310,97 @@ def test_cbor_encoding_when_requested():
     t = next(a for a in v.vcon_dict["analysis"] if a["type"] == "agent_trace")
     assert t["encoding"] == "base64url"
     assert t.get("mediatype") == "application/cbor"
+
+
+# --- analysis[].attachment (CON-1104) ---
+
+
+def _attachment_indices(v: Vcon, *, purpose: str) -> list[int]:
+    return [
+        i for i, a in enumerate(v.vcon_dict.get("attachments", [])) if a.get("purpose") == purpose
+    ]
+
+
+def test_session_granularity_trace_links_to_all_file_change_and_environment_attachments():
+    v = _build()  # with_filechange=True, single agent with a non-empty environment
+    (fc_idx,) = _attachment_indices(v, purpose="agent_file_change")
+    (env_idx,) = _attachment_indices(v, purpose="agent_environment")
+    t = next(a for a in v.vcon_dict["analysis"] if a["type"] == "agent_trace")
+    assert t["attachment"] == sorted([fc_idx, env_idx])
+
+
+def test_session_granularity_trace_attachment_is_bare_int_when_only_one_match():
+    v = _build(with_filechange=False)  # no file changes -> only the environment attachment
+    (env_idx,) = _attachment_indices(v, purpose="agent_environment")
+    t = next(a for a in v.vcon_dict["analysis"] if a["type"] == "agent_trace")
+    assert t["attachment"] == env_idx
+
+
+def test_per_tool_call_granularity_links_each_trace_to_its_own_file_change():
+    s = _fixture_session()  # tc1 = Bash "ls" (no file change), tc2 = Write src/foo.py
+    v = build_vcon(s, granularity="per_tool_call")
+    (fc_idx,) = _attachment_indices(v, purpose="agent_file_change")
+    (env_idx,) = _attachment_indices(v, purpose="agent_environment")
+    traces = [a for a in v.vcon_dict["analysis"] if a["type"] == "agent_trace"]
+    assert len(traces) == 2
+
+    def _body_entries(t):
+        return json_body(t)["verifiable-agent-record"]["session-trace"]["entries"]
+
+    tc1_trace = next(
+        t
+        for t in traces
+        if _body_entries(t)[0]["kind"] == "tool_call"
+        and _body_entries(t)[0].get("tool-name") == "Bash"
+    )
+    tc2_trace = next(t for t in traces if _body_entries(t)[0].get("tool-name") == "Write")
+
+    # tc1 (Bash "ls") produced no file change: derived only from the
+    # environment attachment (every trace embeds the full agent+env list).
+    assert tc1_trace["attachment"] == env_idx
+    # tc2 (Write) produced a file change: derived from both.
+    assert tc2_trace["attachment"] == sorted([fc_idx, env_idx])
+
+
+def test_no_attachment_field_when_trace_derived_from_nothing():
+    # No file changes and environment attachments disabled: the trace is
+    # derived from dialog only, so `attachment` must be omitted entirely
+    # (draft-ietf-vcon-vcon-core-04 §4.5.3: optional only in that case).
+    v = build_vcon(
+        _fixture_session(with_filechange=False),
+        include_environment_attachments=False,
+        lawful_basis_cfg=_SYNTHETIC_LAWFUL_BASIS_CFG,
+    )
+    assert v.vcon_dict.get("attachments", []) == [
+        a for a in v.vcon_dict["attachments"] if a.get("purpose") == "lawful_basis"
+    ]
+    t = next(a for a in v.vcon_dict["analysis"] if a["type"] == "agent_trace")
+    assert "attachment" not in t
+
+
+def test_lawful_basis_appended_after_build_does_not_shift_analysis_attachment_indices():
+    """A caller (e.g. a CLI `finalize` step) may build with
+    `include_lawful_basis=False` and append `lawful_basis` itself afterward.
+    Since it always lands after every attachment an analysis might reference,
+    already-resolved `attachment` indices on the analysis must still be
+    correct once it's added.
+    """
+    v = build_vcon(_fixture_session(), include_lawful_basis=False)
+    t = next(a for a in v.vcon_dict["analysis"] if a["type"] == "agent_trace")
+    (fc_idx,) = _attachment_indices(v, purpose="agent_file_change")
+    (env_idx,) = _attachment_indices(v, purpose="agent_environment")
+    expected = sorted([fc_idx, env_idx])
+    assert t["attachment"] == expected
+
+    added = add_lawful_basis(v, _SYNTHETIC_LAWFUL_BASIS_CFG, granted_at="2026-05-22T18:00:00+00:00")
+    assert added
+
+    # Same analysis dict, still correct: `attachment` indices are unaffected
+    # by lawful_basis landing after them.
+    assert t["attachment"] == expected
+    for idx in expected:
+        assert v.vcon_dict["attachments"][idx].get("purpose") in {
+            "agent_file_change",
+            "agent_environment",
+        }
+    assert v.vcon_dict["attachments"][-1]["purpose"] == "lawful_basis"
