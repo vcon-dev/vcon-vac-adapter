@@ -55,6 +55,16 @@ def test_builds_vcon_with_vac_record(session):
     assert "agent_session" in d["extensions"]
     assert len(d["dialog"]) == 2
 
+    # Party typing (draft-ietf-vcon-vcon-core-04 §4.2.11/§4.2.12): an OTel
+    # span carries no role guarantee for the human party, so `type` stays
+    # off there; the model party is still unambiguously a bot, with `org`
+    # set from the source's own `gen_ai.provider.name` attribute.
+    user_party = d["parties"][0]
+    assert "type" not in user_party
+    agent_party = next(p for p in d["parties"] if p.get("role") == "agent")
+    assert agent_party["type"] == "bot"
+    assert agent_party["org"] == "anthropic"
+
     analysis = next(a for a in d["analysis"] if a["type"] == "agent_trace")
     vac = json_body(analysis)["verifiable-agent-record"]
     assert analysis["schema"].endswith("draft-birkholz-verifiable-agent-conversations/")

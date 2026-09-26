@@ -37,6 +37,15 @@ def test_simple_session_emits_valid_vcon():
     # Spec checks
     assert v.vcon_dict["vcon"] == "0.4.0"
     assert "agent_session" in v.vcon_dict["extensions"]
+    # Party typing (draft-ietf-vcon-vcon-core-04 §4.2.11/§4.2.12): the human
+    # user's own JSONL "user" events make `type: "person"` unambiguous; the
+    # model party is always `type: "bot"` with `org` set to the
+    # Anthropic-derived provider.
+    user_party = v.vcon_dict["parties"][0]
+    assert user_party["type"] == "person"
+    agent_party = next(p for p in v.vcon_dict["parties"] if p.get("role") == "agent")
+    assert agent_party["type"] == "bot"
+    assert agent_party["org"] == "anthropic"
     # agent_trace analysis present
     traces = [a for a in v.vcon_dict.get("analysis", []) if a["type"] == "agent_trace"]
     assert len(traces) == 1
@@ -78,5 +87,8 @@ def test_subagent_task_produces_two_agent_parties():
     v = build_vcon(s)
     agent_parties = [p for p in v.vcon_dict["parties"] if p.get("role") == "agent"]
     assert len(agent_parties) == 2
+    # Every agent party is a bot, including the sub-agent spawned from a
+    # `Task` tool call — draft-ietf-vcon-vcon-core-04 §4.2.11.
+    assert all(p["type"] == "bot" for p in agent_parties)
     sub_party = next(p for p in agent_parties if p.get("name") == "general-purpose")
     assert sub_party["meta"]["agent_session"]["parent_agent_id"] == "agent-claude-code-0"
