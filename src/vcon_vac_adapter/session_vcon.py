@@ -103,10 +103,22 @@ def build_vcon(
     agent_index: dict[str, int] = {}
     agent_validation = "synthetic" if user_party.get("validation") == "synthetic" else "system"
     for i, a in enumerate(session.agents, start=1):
+        # draft-ietf-vcon-vcon-core-04 §4.2.11: every AgentRef in the IR is an
+        # automated party (the primary model, a sub-agent, or a bridged
+        # tool/service) — never a human — so `type: "bot"` is unconditional
+        # here. §4.2.12 `org`: only set when the source actually names the
+        # model vendor (AgentRef.provider is always source-derived: an OTel
+        # `gen_ai.provider.name`/`gen_ai.system` attribute, or which
+        # vendor-specific API/SDK a source module talked to) — never invented.
+        # "unknown" (otel.py's fallback when no such attribute is present) is
+        # not a real identifier, so it's left off.
+        org = a.provider if a.provider and a.provider != "unknown" else None
         v.add_party(
             Party(
                 name=a.name or a.model_id,
                 role="agent",
+                type="bot",
+                org=org,
                 validation=agent_validation,
                 meta=_agent_meta(session, a.agent_id),
             )

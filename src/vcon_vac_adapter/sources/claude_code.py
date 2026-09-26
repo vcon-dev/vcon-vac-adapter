@@ -300,6 +300,11 @@ def parse_lines(
         user_party={
             "name": user_name,
             "role": "user",
+            # draft-ietf-vcon-vcon-core-04 §4.2.11: a Claude Code session's
+            # "user" JSONL events are the human operator's own turns, so
+            # `type: "person"` is unambiguous here (unlike otel.py, where a
+            # "user" span carries no such guarantee).
+            "type": "person",
             **({"validation": user_validation} if user_validation else {}),
         },
         agents=list(agents.values()),

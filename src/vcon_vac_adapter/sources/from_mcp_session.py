@@ -54,7 +54,7 @@ def from_mcp_session(mcp_session: Any, *, platform: SourcePlatform = "anthropic"
         session_id=sid,
         started_at=started,
         ended_at=ended,
-        user_party={"name": "User", "role": "user"},
+        user_party=_user_party_for_platform(platform),
         agents=[agent],
         entries=entries,
         file_changes=[],  # platform-specific extractors can populate after the fact
@@ -71,6 +71,20 @@ def _provider_for_platform(platform: SourcePlatform) -> str:
         "openai_responses": "openai",
         "openai_agents": "openai",
     }[platform]
+
+
+def _user_party_for_platform(platform: SourcePlatform) -> dict[str, Any]:
+    """draft-ietf-vcon-vcon-core-04 §4.2.11: a direct Anthropic Messages API
+    or OpenAI Responses API trace's `role: "user"` turn is unambiguously the
+    human caller, so `type: "person"` is safe there. The OpenAI Agents SDK is
+    a multi-agent orchestration runtime — its top-level "user" turn can
+    itself be another agent or an upstream service replaying a prompt, so we
+    leave `type` off rather than guess.
+    """
+    party: dict[str, Any] = {"name": "User", "role": "user"}
+    if platform in ("anthropic", "openai_responses"):
+        party["type"] = "person"
+    return party
 
 
 def _turn_to_entries(turn: Any, agent_id: str) -> list[Entry]:

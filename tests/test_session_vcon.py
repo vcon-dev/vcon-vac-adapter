@@ -144,6 +144,40 @@ def test_agent_party_meta_has_required_fields():
     assert "environment" in meta and meta["environment"]["cwd"] == "/Users/example/proj"
 
 
+def test_agent_party_is_typed_bot_with_org_from_provider():
+    """draft-ietf-vcon-vcon-core-04 §4.2.11/§4.2.12: an AgentRef always
+    represents an automated party, so `type: "bot"` is unconditional; `org`
+    is set from the source-derived `AgentRef.provider`."""
+    v = _build()
+    agent_parties = [p for p in v.vcon_dict["parties"] if p.get("role") == "agent"]
+    assert agent_parties[0]["type"] == "bot"
+    assert agent_parties[0]["org"] == "anthropic"
+
+
+def test_user_party_type_passes_through_unmodified():
+    """`build_vcon` never invents a `type` for the user party — it only
+    forwards whatever the IR's `Session.user_party` dict already carries
+    (set by the source parser, per source-specific ambiguity rules)."""
+    v = _build()
+    assert "type" not in v.vcon_dict["parties"][0]
+
+
+def test_agent_party_org_omitted_when_provider_unknown():
+    s = _fixture_session()
+    s.agents[0] = AgentRef(
+        agent_id=s.agents[0].agent_id,
+        model_id=s.agents[0].model_id,
+        provider="unknown",
+        recording_agent=s.agents[0].recording_agent,
+        name=s.agents[0].name,
+        environment=s.agents[0].environment,
+    )
+    v = build_vcon(s, lawful_basis_cfg=_SYNTHETIC_LAWFUL_BASIS_CFG)
+    agent_party = next(p for p in v.vcon_dict["parties"] if p.get("role") == "agent")
+    assert agent_party["type"] == "bot"
+    assert "org" not in agent_party
+
+
 def test_subagent_has_parent_agent_id():
     v = build_vcon(_fixture_session(with_subagent=True))
     sub = next(p for p in v.vcon_dict["parties"] if p.get("name") == "Sub-Agent")
