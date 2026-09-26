@@ -23,7 +23,7 @@ from vcon import Vcon
 from vcon.dialog import Dialog
 from vcon.party import Party
 
-from .ir import FileChange, Session
+from .ir import Entry, FileChange, Session
 from .vac_builder import VAC_SCHEMA_URL, build_vac_record
 from .vcon_builder import LawfulBasisConfig, add_lawful_basis, new_vcon, sha512_b64url
 
@@ -152,7 +152,88 @@ def build_vcon(
 
     all_dialog_indices = sorted(dialog_idx_for_entry.values())
 
-    # --- 3. analysis: VAC agent_trace ---
+    # --- 3. attachments: file_changes, environment ---
+    #
+    # Built *before* the analysis section (4) so that each `agent_trace`
+    # analysis entry can carry a correct `attachment` index/index-list
+    # (draft-ietf-vcon-vcon-core-04 §4.5.3: "Index/indices of attachment
+    # objects this analysis is based on") pointing at the attachments whose
+    # data it embeds, rather than a hardcoded/guessed position.
+    #
+    # `lawful_basis` (step 5) is added *after* analysis, at the very end,
+    # since no `agent_trace` analysis is ever derived from it — appending it
+    # last never shifts the indices resolved here. The same holds if a
+    # caller appends `lawful_basis` itself, later, via `add_lawful_basis()`
+    # (e.g. a CLI `finalize` step) instead of through `include_lawful_basis`:
+    # as long as it lands after every attachment an analysis might reference,
+    # already-resolved indices stay valid. See
+    # `test_lawful_basis_appended_after_build_does_not_shift_analysis_attachment_indices`.
+    entry_timestamp = {e.entry_id: e.timestamp.isoformat() for e in session.entries}
+    session_start = session.started_at.isoformat()
+
+    # entry_id -> indices into v.vcon_dict["attachments"] of the FileChange
+    # attachment(s) derived from that entry (an entry, e.g. MultiEdit, can
+    # produce more than one FileChange).
+    file_change_attachment_idx: dict[str, list[int]] = {}
+    for fc in session.file_changes:
+        body = _filechange_body(fc)
+        canonical_bytes = json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        v.add_attachment(
+            purpose="agent_file_change",
+            party=agent_index.get(fc.agent_id, 1),
+            dialog=_dialog_for_entry(dialog_idx_for_entry, fc.entry_id, 0),
+            start=entry_timestamp.get(fc.entry_id, session_start),
+            encoding="json",
+            mediatype="application/json",
+            body=body,
+            content_hash=sha512_b64url(canonical_bytes),
+        )
+        idx = len(v.vcon_dict["attachments"]) - 1
+        file_change_attachment_idx.setdefault(fc.entry_id, []).append(idx)
+
+    # Indices of the `agent_environment` attachments. Every `agent_trace`
+    # analysis (session or per-tool-call granularity) embeds the *full*
+    # `session.agents` list, environments included (see `_agent_to_vac()` /
+    # `build_vac_record()`), so every trace is derived from all of these,
+    # regardless of which entries it covers.
+    environment_attachment_indices: list[int] = []
+    if include_environment_attachments:
+        for a in session.agents:
+            env = {k: v_ for k, v_ in asdict(a.environment).items() if v_ is not None}
+            if not env:
+                continue
+            body = env
+            canonical_bytes = json.dumps(body, sort_keys=True, separators=(",", ":")).encode(
+                "utf-8"
+            )
+            v.add_attachment(
+                purpose="agent_environment",
+                party=agent_index[a.agent_id],
+                dialog=0,
+                start=session_start,
+                encoding="json",
+                mediatype="application/json",
+                body=body,
+                content_hash=sha512_b64url(canonical_bytes),
+            )
+            environment_attachment_indices.append(len(v.vcon_dict["attachments"]) - 1)
+
+    def _attachment_indices_for(entries: list[Entry]) -> int | list[int] | None:
+        """Attachments a trace over `entries` is derived from, or `None` if
+        it is derived from no attachments at all (in which case `attachment`
+        is omitted — draft-ietf-vcon-vcon-core-04 §4.5.3 makes it optional
+        exactly in that case).
+        """
+        entry_ids = {e.entry_id for e in entries}
+        idxs = set(environment_attachment_indices)
+        for entry_id in entry_ids:
+            idxs.update(file_change_attachment_idx.get(entry_id, []))
+        if not idxs:
+            return None
+        ordered = sorted(idxs)
+        return ordered[0] if len(ordered) == 1 else ordered
+
+    # --- 4. analysis: VAC agent_trace ---
     def _emit_trace(sess: Session, dialog: list[int]) -> None:
         # `body` is the raw VAC record dict for `encoding: "json"`, or a
         # base64url CBOR string for `encoding: "base64url"` — see
@@ -169,6 +250,16 @@ def build_vcon(
             mediatype="application/cbor" if enc == "base64url" else "application/json",
         )
         v.add_analysis(**kwargs)
+        # `attachment` is set directly on the freshly-appended dict rather
+        # than passed as an add_analysis() kwarg: vcon-lib 0.9.x's
+        # `_ALLOWED_ANALYSIS_PROPERTIES` does not include `attachment` (the
+        # vendored core schema, tests/schema/vcon_json_schema.json, already
+        # does — see its `Analysis.attachment` property), so relying on the
+        # library's non-standard-property passthrough would be fragile
+        # across property_handling modes/versions.
+        attachment_ids = _attachment_indices_for(sess.entries)
+        if attachment_ids is not None:
+            v.vcon_dict["analysis"][-1]["attachment"] = attachment_ids
 
     if granularity == "session":
         _emit_trace(session, all_dialog_indices)
@@ -191,44 +282,7 @@ def build_vcon(
             parent_dialog = _dialog_for_entry(dialog_idx_for_entry, e.parent_id or "", 0)
             _emit_trace(sub, [parent_dialog])
 
-    # --- 4. attachments: file_changes, environment, lawful_basis ---
-    entry_timestamp = {e.entry_id: e.timestamp.isoformat() for e in session.entries}
-    session_start = session.started_at.isoformat()
-
-    for fc in session.file_changes:
-        body = _filechange_body(fc)
-        canonical_bytes = json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        v.add_attachment(
-            purpose="agent_file_change",
-            party=agent_index.get(fc.agent_id, 1),
-            dialog=_dialog_for_entry(dialog_idx_for_entry, fc.entry_id, 0),
-            start=entry_timestamp.get(fc.entry_id, session_start),
-            encoding="json",
-            mediatype="application/json",
-            body=body,
-            content_hash=sha512_b64url(canonical_bytes),
-        )
-
-    if include_environment_attachments:
-        for a in session.agents:
-            env = {k: v_ for k, v_ in asdict(a.environment).items() if v_ is not None}
-            if not env:
-                continue
-            body = env
-            canonical_bytes = json.dumps(body, sort_keys=True, separators=(",", ":")).encode(
-                "utf-8"
-            )
-            v.add_attachment(
-                purpose="agent_environment",
-                party=agent_index[a.agent_id],
-                dialog=0,
-                start=session_start,
-                encoding="json",
-                mediatype="application/json",
-                body=body,
-                content_hash=sha512_b64url(canonical_bytes),
-            )
-
+    # --- 5. lawful_basis attachment (always last; see note in step 3) ---
     if include_lawful_basis:
         cfg = lawful_basis_cfg if lawful_basis_cfg is not None else LawfulBasisConfig.from_env()
         add_lawful_basis(v, cfg, granted_at=session.started_at.isoformat(), party=0, dialog=0)
